@@ -1,0 +1,3 @@
+eval "$(/home/martim/anaconda3/bin/conda shell.posix hook)"
+conda activate  /home/martim/lcncluster/lisboa/miniconda3
+python /home/martim/.vscode/extensions/ms-python.python-2022.20.1/pythonFiles/get_output_via_markers.py /home/martim/.vscode/extensions/ms-python.python-2022.20.1/pythonFiles/printEnvVariables.py
