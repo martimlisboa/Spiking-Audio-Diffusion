@@ -37,7 +37,7 @@ class TransformerModel(nn.Module):
     def forward_batch_not_first(self, x: Tensor, src_mask: Optional[Tensor] = None):
         x = self.encoder(x) * math.sqrt(self.d_model)
         x = self.pos_encoder(x)
-        output = self.transformer_encoder(x, src_mask)
+        output = self.transformer_encoder(x, mask = src_mask)
         output = self.decoder(output)
         return output
 
@@ -89,19 +89,18 @@ class PositionalEncoding(nn.Module):
 
 if __name__ == "__main__":
     from torchinfo import summary
-    d = 512
-    x = torch.rand(32,62,176)
 
+    d = 128 #n_input = n_output
+    x = torch.rand(3,128,256) # Batch Channel/Feature SeqLength
+    #Transformer with batch first takes Batch SeqLength Channel/Feature
     model = TransformerModel(d, d, batch_first=True, d_model=256, nhead=4, nlayers=3, d_hid=1024)
-
-    rnn = nn.LSTM(input_size=d, hidden_size=256, num_layers=2, batch_first=True, bidirectional=True)
-
+    
+    print("input",x.shape)
+    x = torch.permute(x,[0,2,1])
+    input = x
     x = model(x)
-    print("output",x.shape)
-    print("rnn output", rnn(x)[0].shape)
+    print("out of transformer",x.shape)
+    x = torch.permute(x,[0,2,1])
+    print("permute",x.shape)
 
-    summary(model,input_data=x)
-
-    print("-------- RNN")
-
-    summary(rnn, input_data=x)
+    summary(model,input_data=input)

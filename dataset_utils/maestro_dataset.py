@@ -29,7 +29,7 @@ class MaestroDataset(Dataset):
         super(MaestroDataset,self).__init__()
 
         self.dataset_folder = args.dataset_folder
-        self.seq_len = int(args.sequence_time*args.sample_rate)
+        self.seq_len = args.sequence_length
         self.DATA_LIMIT = args.data_limit # put this to none in practice
         self.CLIP_LIMIT = args.clip_limit
         self.split = args.split

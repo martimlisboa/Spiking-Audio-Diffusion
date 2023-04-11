@@ -16,33 +16,33 @@ import time
 
 Models = {}
 
-def count_bpf(bottleneck,bottleneck_output): #Returns bits per frame
-    if bottleneck in ['spikes','rsnn']:
-        print(f"bottleneck shape: {bottleneck_output.shape}")
-        nr_spikes  = bottleneck_output.sum()
-        print(f"nr_spikes: {nr_spikes}")
-        time_frames = bottleneck_output.shape[-2]
-        print(f"time_frames: {time_frames}")
+def count_bpf(bottleneck_output, conv = 1): #Returns bits per frame
+    
+    print(f"bottleneck shape: {bottleneck_output.shape}")
+    nr_spikes  = bottleneck_output.sum()
+    print(f"nr_spikes: {nr_spikes}")
+    time_frames = bottleneck_output.shape[-1]
+    print(f"time_frames: {time_frames}")
 
-        nr_neurons = bottleneck_output.shape[-1]
-        print(f"nr_neurons: {nr_neurons}")
+    nr_neurons = bottleneck_output.shape[-2]
+    print(f"nr_neurons: {nr_neurons}")
 
-        nr_time_bits = math.ceil(math.log2(time_frames))
-        print(f"nr_time_bits: {nr_time_bits}")
+    nr_time_bits = math.ceil(math.log2(time_frames))
+    print(f"nr_time_bits: {nr_time_bits}")
 
-        nr_neuron_bits = math.ceil(math.log2(nr_neurons))
-        print(f"nr_neuron_bits: {nr_neuron_bits}")
+    nr_neuron_bits = math.ceil(math.log2(nr_neurons))
+    print(f"nr_neuron_bits: {nr_neuron_bits}")
 
-        bpf = nr_spikes *(nr_time_bits + nr_neuron_bits)/time_frames
-        print(f"bits per frame: {bpf}")
+    bpf = nr_spikes *(nr_time_bits + nr_neuron_bits)/time_frames
+    print(f"SPARSE? bits per frame: {bpf}")
 
-        firing_rate = bottleneck_output.mean()
-        print(f"mean firing rate: {firing_rate}")
+    firing_rate = bottleneck_output.mean()
+    print(f"mean firing rate: {firing_rate}")
 
+    bpf = bpf if bpf < nr_neurons else nr_neurons
+    print(f"Final Bit rate {bpf} bit/frame = {bpf*conv} bit/s")
+    return bpf
 
-        return bpf
-    else:
-        return 0
 
 
 def load_model(args, model_name, device):
@@ -60,6 +60,7 @@ def load_model(args, model_name, device):
         Models[model_name] = model
     dt = time.time()-t0
     print(f"Loading Time: {dt}")
+
 def main(args):
     names = ["bach","nocturne","scriabin","beethoven"]
     input_path = "/lcncluster/lisboa/spikes_audio_diffusion/wav_inputs/"
@@ -103,9 +104,9 @@ def main(args):
     print("\n")
     if args.encoder[0] in ["mel","vocoder"]:
         latent = model.encode(audios) # Encode
-    elif args.encoder[0] in ["encodec"]:
+    elif args.encoder[0] in ["encodec","b_encodec"]:
         latent, info = model.encode(audios) # Encode
-        spikes = info['spikes']
+        spikes = torch.where(info["spikes"],1.,0.)
         print(f"spikes shape: {spikes.shape}")
     elif args.encoder[0] in ["q_encodec"]:
         latent, info = model.encode(audios) # Encode
@@ -158,6 +159,9 @@ def main(args):
     if args.plot_spikes:
         fig, ax = plt.subplots(figsize=(16,9))
         for i,z in enumerate(spikes.detach().cpu()):
+            print(f"\nSample:{names[i]}")
+            print(f"Bit Rate")
+            count_bpf(z, conv = args.sample_rate/model.autoencoder.encoder.downsample_factor)
             ax.imshow(z,cmap="Greys",interpolation="none",aspect='auto')
             fig.tight_layout()
             filename = "/lcncluster/lisboa/spikes_audio_diffusion/wav_outputs/"+names[i]+"/"+ args.output +"/"+"plot_spikes_"+args.encoder[0]+".png";

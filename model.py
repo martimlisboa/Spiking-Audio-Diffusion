@@ -9,7 +9,7 @@ from audio_encoders_pytorch import MelE1d, TanhBottleneck
 from parser import make_parser
 from dataset_utils import MaestroDataset,from_maestro
 
-from models import SpikingEncodecEncoder, QuantizingEncodecEncoder
+from models import SpikingEncodecEncoder, QuantizingEncodecEncoder,ResidualSpikingEncodecEncoder
 
 
 class SpikingAudioDiffusion(nn.Module):
@@ -18,7 +18,7 @@ class SpikingAudioDiffusion(nn.Module):
         self.args = args
 
         #Encoder Stuff
-        if args.encoder[0] in ["mel", "encodec","q_encodec"]:
+        if args.encoder[0] in ["mel", "encodec","q_encodec","b_encodec"]:
             self.autoencoder = DiffusionAE(
                 encoder= self._build_encoder(),
                 inject_depth=args.inject_depth, # Depth at which to inject the Auto Encoded Context: In the Paper: 4
@@ -61,12 +61,12 @@ class SpikingAudioDiffusion(nn.Module):
             encoding = self.autoencoder.to_spectrogram(audio)
             return encoding
             
-        elif self.args.encoder[0] in ["encodec","q_encodec"]:
+        elif self.args.encoder[0] in ["encodec","q_encodec","b_encodec"]:
             encoding, info = self.autoencoder.encoder(audio,with_info = True)
             return encoding, info
 
     def decode(self,encoding, num_steps = 10,show_progress = False):
-        if self.args.encoder[0] in ["mel", "encodec","q_encodec"]:
+        if self.args.encoder[0] in ["mel", "encodec","q_encodec","b_encodec"]:
             #Decoding - Override inner method
             sample = self.autoencoder.decode(encoding, num_steps= num_steps,show_progress = show_progress)
         elif self.args.encoder[0] in ["vocoder"]:
@@ -91,6 +91,8 @@ class SpikingAudioDiffusion(nn.Module):
             return SpikingEncodecEncoder(self.args)
         elif self.args.encoder == ["q_encodec"]:
             return QuantizingEncodecEncoder(self.args)
+        elif self.args.encoder == ["b_encodec"]:
+            return ResidualSpikingEncodecEncoder(self.args)
 
       
 if __name__=="__main__":

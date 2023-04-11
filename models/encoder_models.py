@@ -13,18 +13,25 @@ from typing import Tuple, Optional
 import torchaudio.transforms as TT
 
 
-
+from .transformer import TransformerModel, generate_square_subsequent_mask
+from .binary_quantizer import BinaryQuantizer
 from .encodec.modules import SEANetEncoder
 from .encodec import quantization as qt
 from .encodec.quantization.vq import QuantizedResult
+
+
+def raise_error_if_nan(tensor,module):
+    if torch.any(torch.isnan(tensor)): 
+        print(f"Found NaN in {module}")
+        raise ValueError()
 
 class SpikingEncodecEncoder(nn.Module):
     def __init__(self,args):
         super().__init__()
         self.encoder = SEANetEncoder(dimension = args.encodec_dim,ratios = args.encodec_ratios)
         self.downsample_factor = 1
-        for r in self.encoder.ratios: self.downsample_factor = self.downsample_factor*r 
-    
+        for r in self.encoder.ratios: self.downsample_factor = self.downsample_factor*r
+
         self.to_spikes = NaiveSpikeLayer(input_dim = self.encoder.dimension, embed_dim=args.bottleneck_dim)
 
 
@@ -33,6 +40,8 @@ class SpikingEncodecEncoder(nn.Module):
         if self.rep_loss_type == "relu":
             self.firing_rate_threshold = args.firing_rate_threshold/args.bottleneck_dim
         self.out_channels = args.bottleneck_dim
+
+        self._lstm = args.lstm
         if args.lstm:
             self.lstm = nn.LSTM(
                     batch_first=True,
@@ -45,17 +54,33 @@ class SpikingEncodecEncoder(nn.Module):
             self.out_channels = args.lstm_hidden_size
         else:
             self.lstm = nn.Identity()
+        
+        self._transformer = args.transformer
+        if args.transformer:
+            self.transformer_internal_dim = args.transformer_internal_dim
+            self.transformer = TransformerModel(args.bottleneck_dim, #input to transformer is spikes so ninput = bottleneck dim
+                                                args.transformer_output_dim,  # output dimension
+                                                batch_first=True, 
+                                                d_model=args.transformer_internal_dim, #Internal transformer model dimension
+                                                nhead=args.transformer_nhead, #Number of attention heads
+                                                nlayers=args.transformer_nlayers, #Number of encoder layers
+                                                d_hid=args.transformer_hidden_dim) #Hidden dimension inside feed forward networks of Transformer Encoder
+            self.out_channels = args.transformer_output_dim
+        else:
+            self.transformer = nn.Identity()
 
 
-        print("Quantizing Encodec Encoder")
-        print(f"Out Channels:{self.out_channels}")
-        print(f"Downsample Factor:{self.out_channels}")
-        print(f"Encodec Dimension:{self.encoder.dimension}")
-        print(f"Nr of Neurons:{args.bottleneck_dim}")
-        print(f"Representation Loss Type:{self.rep_loss_type}")
+        print("Spiking Encodec Encoder")
+        print(f"Out Channels: {self.out_channels}")
+        print(f"Downsample Factor: {self.downsample_factor}")
+        print(f"Encodec Dimension: {self.encoder.dimension}")
+        print(f"Nr of Neurons: {args.bottleneck_dim}")
+        print(f"Representation Loss Type: {self.rep_loss_type}")
         if self.rep_loss_type == "relu":
             print(f"Firing rate threshold per neuron: nu = {self.firing_rate_threshold}")
-        print(f"LSTM:{args.lstm}")
+        print(f"LSTM: {args.lstm}")
+        print(f"Transformer: {args.transformer}")
+
         print("\n") 
 
     def to_spike(self,x):
@@ -63,6 +88,163 @@ class SpikingEncodecEncoder(nn.Module):
         x = self.to_spikes(x)
         x = torch.permute(x,[0,2,1])
         return x
+
+
+    def spike_loss(self, x):
+        #x [Batch,Neuron,Time]
+        representation_loss = 0
+        if self.rep_loss_type == 'mean':
+            representation_loss = x.mean()
+        elif self.rep_loss_type == 'mean2':
+            squared_firing = x.mean(dim = 2)**2 
+            representation_loss = squared_firing.mean()
+        elif self.rep_loss_type == 'relu':
+            firing_rate = x.mean(dim = 2) #average over time =  [Batch, Neuron Firing rates]
+            phi = max(median(firing_rate), thresh)
+            relu = torch.maximum(torch.zeros_like(firing_rate), firing_rate - self.firing_rate_threshold) #Cap N \nu at firing rate threshold
+            representation_loss = relu.mean()
+            #print(f"Firing Rate: {firing_rate}")
+
+            #print(f"Loss: {representation_loss}")
+        return representation_loss
+
+    def to_lstm(self,x):
+        x = torch.permute(x,[0,2,1])
+        x,_ = self.lstm(x)
+        x = torch.permute(x,[0,2,1])
+        return x
+
+    def to_transformer(self,x):
+        x = torch.permute(x,[0,2,1])
+        mask = torch.nn.Transformer.generate_square_subsequent_mask(x.size(1)).to(x)
+        #print(mask)
+        x = self.transformer(x,src_mask = mask)
+        x = torch.permute(x,[0,2,1])
+        return x
+    def forward(self,x ,with_info: bool=False):
+        #Encodec Encoder
+        x = self.encoder(x)
+        raise_error_if_nan(x,"Encodec Encoder")
+
+        #print(f"shape after encoder: {x.shape}")
+
+        #Naive Spiking Module
+        x = self.to_spike(x)
+        raise_error_if_nan(x,"Naive Spiking Module")
+        rep_loss = self.spike_loss(x)
+        info = {'spikes': x,'rep_loss':rep_loss} #Store the spikes in info
+
+
+        if self._lstm:
+            x = self.to_lstm(x)
+            raise_error_if_nan(x,"LSTM")
+            #print(f"Shape after LSTM: {x.shape}")
+
+        if self._transformer:
+            x = self.to_transformer(x)
+            raise_error_if_nan(x,"Transformer")
+            #print(f"Shape after Transformer: {x.shape}")
+
+        return (x, info) if with_info else x
+    
+
+class QuantizingEncodecEncoder(nn.Module):
+    def __init__(self,args):
+        super().__init__()
+        self.encoder = SEANetEncoder(dimension = args.encodec_dim,ratios = args.encodec_ratios)
+        self.quantizer = qt.ResidualVectorQuantizer(dimension = args.bottleneck_dim,n_q = 8)
+
+        self.out_channels = self.quantizer.dimension
+        self.downsample_factor = 1
+        for r in self.encoder.ratios: self.downsample_factor = self.downsample_factor*r 
+
+        self.frame_rate = int(args.sample_rate/self.downsample_factor)
+
+        print("Quantizing Encodec Encoder")
+        print(f"Out Channels: {self.out_channels}")
+        print(f"Downsample Factor: {self.out_channels}")
+        print(f"Frame Rate: {self.frame_rate} frames/s")
+        print("\n")
+
+
+
+
+    def forward(self,x,with_info: bool=False):
+        #Encodec Encoder:
+        x = self.encoder(x)
+        #Residual Vector Quantization
+        q_result = self.quantizer(x,frame_rate = self.frame_rate) #Frame Rate is completely useless here but has to be passed
+
+        x = q_result.quantized
+        info = {"codes": q_result.codes, "rep_loss": q_result.penalty}
+
+        return (x, info) if with_info else x
+
+class ResidualSpikingEncodecEncoder(nn.Module):
+    def __init__(self,args):
+        super().__init__()
+        self.encoder = SEANetEncoder(dimension = args.encodec_dim,ratios = args.encodec_ratios)
+        self.downsample_factor = 1
+        for r in self.encoder.ratios: self.downsample_factor = self.downsample_factor*r
+
+        self.spikes = BinaryQuantizer(args.encodec_dim,args.bottleneck_dim,lr_internal = args.binary_quantizer_lr_internal) #Spiking module is a binary quantizer here
+
+
+        self.rep_loss_type = args.rep_loss_type[0]
+        self.firing_rate_threshold = 0
+        if self.rep_loss_type == "relu":
+            self.firing_rate_threshold = args.firing_rate_threshold/args.bottleneck_dim
+        self.out_channels = args.encodec_dim
+
+        self._lstm = args.lstm
+        if args.lstm:
+            self.lstm = nn.LSTM(
+                    batch_first=True,
+                    input_size=args.encodec_dim,
+                    hidden_size=args.lstm_hidden_size,
+                    num_layers=2,
+                    bidirectional=False,
+                    dropout=0.3
+                    )
+            self.out_channels = args.lstm_hidden_size
+        else:
+            self.lstm = nn.Identity()
+
+        self._transformer = args.transformer
+        if args.transformer:
+            self.transformer_internal_dim = args.transformer_internal_dim
+            self.transformer = TransformerModel(args.encodec_dim, #input to transformer is inversed spikes so ninput = encodec dim
+                                                args.transformer_output_dim,  # output dimension
+                                                batch_first=True, 
+                                                d_model=args.transformer_internal_dim, #Internal transformer model dimension
+                                                nhead=args.transformer_nhead, #Number of attention heads
+                                                nlayers=args.transformer_nlayers, #Number of encoder layers
+                                                d_hid=args.transformer_hidden_dim) #Hidden dimension inside feed forward networks of Transformer Encoder
+            self.out_channels = args.transformer_output_dim
+        else:
+            self.transformer = nn.Identity()
+
+
+        print("Binary Quantizer Spiking Encodec Encoder")
+        print(f"Out Channels: {self.out_channels}")
+        print(f"Downsample Factor: {self.downsample_factor}")
+        print(f"Encodec Dimension: {self.encoder.dimension}")
+        print(f"Nr of Neurons: {args.bottleneck_dim}")
+        print(f"Representation Loss Type: {self.rep_loss_type}")
+        if self.rep_loss_type == "relu":
+            print(f"Firing rate threshold per neuron: nu = {self.firing_rate_threshold}")
+        print(f"LSTM: {self._lstm}")
+        print(f"Transformer: {self._transformer}")
+
+        print("\n") 
+
+    def to_spikes(self,x):
+        x = torch.permute(x,[0,2,1])
+        x, z_binary, z = self.spikes(x)
+        x = torch.permute(x,[0,2,1])
+        z_binary = torch.permute(z_binary,[0,2,1])
+        
+        return x, z_binary, z
 
 
     def spike_loss(self, x):
@@ -87,56 +269,38 @@ class SpikingEncodecEncoder(nn.Module):
         x,_ = self.lstm(x)
         x = torch.permute(x,[0,2,1])
         return x
+
+    def to_transformer(self,x):
+        x = torch.permute(x,[0,2,1])
+        mask = torch.nn.Transformer.generate_square_subsequent_mask(x.size(1)).to(x)
+        #print(mask)
+        x = self.transformer(x,src_mask = mask)
+        x = torch.permute(x,[0,2,1])
+        return x
+
     def forward(self,x ,with_info: bool=False):
         #Encodec Encoder
         x = self.encoder(x)
+        raise_error_if_nan(x, "Encodec Encoder")
         #print(f"shape after encoder: {x.shape}")
 
-        #Naive Spiking Module
-        x = self.to_spike(x)
-        rep_loss = self.spike_loss(x)
-        info = {'spikes': x,'rep_loss':rep_loss} #Store the spikes in info
+        #Binary Quantizer Spiking Module
+        x, z_binary, z = self.to_spikes(x)
+        raise_error_if_nan(x, "Binary Quantizer")
 
+        rep_loss = self.spike_loss(z)
+        info = {'spikes': z_binary,'rep_loss':rep_loss} #Store the spikes and the loss in info
+        #print(f"shape after spikes: {x.shape}")
 
+        if self._lstm:
+            x = self.to_lstm(x)
+            raise_error_if_nan(x, "LSTM")
 
-        x = self.to_lstm(x)
-        #print(f"Shape after LSTM: {x.shape}")
+            #print(f"Shape after LSTM: {x.shape}")
 
-
-        return (x, info) if with_info else x
-    
-
-class QuantizingEncodecEncoder(nn.Module):
-    def __init__(self,args):
-        super().__init__()
-        self.encoder = SEANetEncoder(dimension = args.encodec_dim,ratios = args.encodec_ratios)
-        self.quantizer = qt.ResidualVectorQuantizer(dimension = args.bottleneck_dim,n_q = 8)
-
-        self.out_channels = self.quantizer.dimension
-        self.downsample_factor = 1
-        for r in self.encoder.ratios: self.downsample_factor = self.downsample_factor*r 
-
-        self.frame_rate = int(args.sample_rate/self.downsample_factor)
-
-        print("Quantizing Encodec Encoder")
-        print(f"Out Channels:{self.out_channels}")
-        print(f"Downsample Factor:{self.out_channels}")
-        print(f"Frame Rate:{self.frame_rate} frames/s")
-        print("\n")
-
-
-
-
-    def forward(self,x,with_info: bool=False):
-        #Encodec Encoder:
-        x = self.encoder(x)
-        #Residual Vector Quantization
-        q_result = self.quantizer(x,frame_rate = self.frame_rate) #Frame Rate is completely useless here but has to be passed
-
-        x = q_result.quantized
-        info = {"codes": q_result.codes, "rep_loss": q_result.penalty}
+        if self._transformer:
+            x = self.to_transformer(x)
+            raise_error_if_nan(x, "Transformer")
+            #print(f"Shape after Transformer: {x.shape}")
 
         return (x, info) if with_info else x
-
-
-        

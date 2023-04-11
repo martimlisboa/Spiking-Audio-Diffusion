@@ -1,4 +1,6 @@
 from .utils import to_numpy
 from .rsnn import RSNNLayer, NaiveSpikeLayer
 from .multitask_splitter import NormalizedMultiTaskSplitter
-from .encoder_models import SpikingEncodecEncoder,QuantizingEncodecEncoder
+from .encoder_models import SpikingEncodecEncoder,QuantizingEncodecEncoder,ResidualSpikingEncodecEncoder
+from .transformer import TransformerModel, generate_square_subsequent_mask
+from .binary_quantizer import BinaryQuantizer

@@ -40,7 +40,7 @@ def parse_parameters(parser):
 
 # Dataset Parameters
     parser.add_argument('--dataset_folder',default = params.dataset_params.dataset_folder)
-    parser.add_argument('--sequence_time', default=params.dataset_params.sequence_time, type = float,help='number of seconds of audio in each of the samples from the dataset')
+    parser.add_argument('--sequence_length', default=params.dataset_params.sequence_length, type = int,help='number of seconds of audio in each of the samples from the dataset')
     parser.add_argument('--clip_limit', default=params.dataset_params.clip_limit, type = int,help='number clips to pass tot he model')
     parser.add_argument('--data_limit', default=params.dataset_params.data_limit, type = int,help='number of songs to clip from')
     parser.add_argument('--sample_rate', default=params.dataset_params.sample_rate, type = int,help='midi sampling rate')
@@ -54,6 +54,7 @@ def parse_parameters(parser):
     parser.add_argument('--bottleneck_dim', default=params.encoder_params.bottleneck_dim, type=int, help='Default bottleneck dim')
     parser.add_argument('--inject_depth', default=params.encoder_params.inject_depth, type=int, help='Default inject depth')
     parser.add_argument('--lstm', action='store_true', default=params.encoder_params.lstm,help='integrate context with lstm after the spikes')
+    parser.add_argument('--transformer', action='store_true', default=params.encoder_params.transformer,help='integrate context with Transformer after the spikes')
     parser.add_argument('--encodec_ratios', nargs='+',default = params.encoder_params.encodec_ratios, type = int,help='Encodec SEANet encoder downsampling factors')
 
     parser.add_argument('--firing_rate_threshold', default=params.encoder_params.firing_rate_threshold, type = float,help='firing rate threshold in relu loss')
@@ -62,6 +63,15 @@ def parse_parameters(parser):
     parser.add_argument('--encodec_dim', default=params.encoder_params.encodec_dim, type=int, help='Default encodec encoder output dim')
     parser.add_argument('--lstm_hidden_size', default=params.encoder_params.lstm_hidden_size, type=int, help='Default lstm hidden size')
     
+    parser.add_argument('--transformer_hidden_dim', default=params.encoder_params.transformer_hidden_dim, type=int, help='Transformer hidden dimension')
+    parser.add_argument('--transformer_output_dim', default=params.encoder_params.transformer_output_dim, type=int, help='Transformer output dimension')
+    parser.add_argument('--transformer_internal_dim', default=params.encoder_params.transformer_internal_dim, type=int, help='Transformer internal dimension')
+    parser.add_argument('--transformer_nhead', default=params.encoder_params.transformer_nhead, type=int, help='Transformer nr of heads')
+    parser.add_argument('--transformer_nlayers', default=params.encoder_params.transformer_nlayers, type=int, help='Transformer number of layers')
+
+
+    parser.add_argument('--binary_quantizer_lr_internal', default=params.encoder_params.binary_quantizer_lr_internal, type=float, help='Internal Learning Rate of Binary Quantizer')
+
 
 def make_parser():
     parser = argparse.ArgumentParser(description='train (or resume training) a SpikingMusic model')

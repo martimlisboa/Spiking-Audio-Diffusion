@@ -40,17 +40,28 @@ params = AttrDict(
     inject_depth = 6,
 
     lstm = False,
+    transformer = False,
 
     encodec_ratios = [8,8,4,2],
     
     firing_rate_threshold = 1e-1, #spikes/frame
-    in_channels = 1
+    in_channels = 1,
+
+
+    transformer_hidden_dim = 1024,
+    transformer_output_dim = 128,
+    transformer_internal_dim = 256,
+    transformer_nhead = 4,
+    transformer_nlayers = 3,
+
+    binary_quantizer_lr_internal = 0.3
+
   ),
 
   dataset_params = AttrDict(
     dataset_folder="/lcncluster/datasets/maestro",
     sample_rate = 22050, 
-    sequence_time = 2**17/22050, #number of seconds of audio in each of the samples from the dataset
+    sequence_length = 2**17, #number of audio samples loaded by data loader
     download=True,
     split="train",
     midi_sampling_rate=100,
