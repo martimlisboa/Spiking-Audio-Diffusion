@@ -103,8 +103,12 @@ def main(args):
     t0 = time.time()
     print("\n")
     if args.encoder[0] in ["mel","vocoder"]:
-        latent = model.encode(audios) # Encode
-    elif args.encoder[0] in ["encodec","b_encodec"]:
+        latent,_ = model.encode(audios) # Encode
+    elif args.encoder[0] in ["encodec"]:
+        latent, info = model.encode(audios) # Encode
+        spikes = info["spikes"]
+        print(f"spikes shape: {spikes.shape}")
+    elif args.encoder[0] in ["b_encodec"]:
         latent, info = model.encode(audios) # Encode
         spikes = torch.where(info["spikes"],1.,0.)
         print(f"spikes shape: {spikes.shape}")

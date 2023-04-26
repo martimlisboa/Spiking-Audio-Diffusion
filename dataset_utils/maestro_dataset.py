@@ -321,11 +321,15 @@ class MaestroDataset(Dataset):
 
 def from_maestro(args, is_distributed=False):
   dataset = MaestroDataset(args)
+  if args.split == "train":
+      shuffle = not is_distributed
+  else:
+      shuffle = False
   #print(dataset.index_table)
   return torch.utils.data.DataLoader(
     dataset,
     batch_size=args.batch_size,
-    shuffle=not is_distributed,
+    shuffle = shuffle,
     collate_fn = Collator(args).collate_maestro,
     num_workers=os.cpu_count(),
     sampler=DistributedSampler(dataset) if is_distributed else None,
@@ -342,7 +346,6 @@ class Collator:
           'audio':torch.from_numpy(audio).unsqueeze(1), #Unsqueeze for mono channel
         }
 
-         
 
 
 

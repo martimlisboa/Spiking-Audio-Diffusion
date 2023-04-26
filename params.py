@@ -28,25 +28,25 @@ params = AttrDict(
   loss_coeff = 1.,
   save_step = 50,
   save_model_step = 25000,
-  
   #Encoder Parameters
   encoder_params = AttrDict(
 
     #bottleneck dim -> nr of neurons (spiking bottlenecks)/ codewords(vq-vae)
-    bottleneck_dim = 128, 
-    lstm_hidden_size = 128,
+    bottleneck_dim = 80, #By default equal to the number of bpf of quantizer 
     encodec_dim = 128,
 
     inject_depth = 6,
 
     lstm = False,
-    transformer = False,
-
+    transformer = True,
+    batch_norm = True,
     encodec_ratios = [8,8,4,2],
     
-    firing_rate_threshold = 1e-1, #spikes/frame
+    firing_rate_threshold = 4, # Nr_neurons * \nu_t
+    spike_function = "free",
     in_channels = 1,
 
+    lstm_hidden_size = 128,
 
     transformer_hidden_dim = 1024,
     transformer_output_dim = 128,

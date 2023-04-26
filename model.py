@@ -55,11 +55,11 @@ class SpikingAudioDiffusion(nn.Module):
         #Encoding  Override Diffusion AE method
         if self.args.encoder[0] in ["mel"]:
             encoding = self.autoencoder.encode(audio)
-            return encoding
+            return encoding, {}
 
         elif self.args.encoder[0] in ["vocoder"]:
             encoding = self.autoencoder.to_spectrogram(audio)
-            return encoding
+            return encoding, {}
             
         elif self.args.encoder[0] in ["encodec","q_encodec","b_encodec"]:
             encoding, info = self.autoencoder.encoder(audio,with_info = True)

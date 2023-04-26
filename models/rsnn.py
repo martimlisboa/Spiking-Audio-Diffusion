@@ -32,6 +32,199 @@ class SpikeFunction(nn.Module):
         return z
 
 
+class FullSpikeFunction(nn.Module):
+    #Implements a reset on the spikes
+    def __init__(self,n_neurons,  reset_alpha = 0.9, thr_alpha=0.95, dampening_factor=0.3, refractory_period=5):
+        super(FullSpikeFunction, self).__init__()
+        self.dampening_factor = dampening_factor
+
+        self.reset_alpha = reset_alpha
+        self.thr_alpha = thr_alpha
+        self.refractory_period = refractory_period
+        self.n_neurons = n_neurons
+        self.reset_gamma = nn.Parameter(data = torch.ones(self.n_neurons), requires_grad = True)
+        self.thr_gamma = nn.Parameter(data = torch.ones(self.n_neurons), requires_grad = True)
+        self.register_buffer("u0", torch.zeros(self.n_neurons))
+        self.register_buffer("b0", torch.zeros(self.n_neurons))
+
+        self.spike = SpikeFunction(dampening_factor = self.dampening_factor)
+
+    def zero_state(self, n_batch, device):
+        oo = torch.ones([n_batch,1], device=device)
+        return oo * self.u0[None, :], oo * self.b0[None, :]
+
+    def forward(self,x):
+        #x in [Batch, Time, Neuron] format
+        B,T,N = x.shape
+        z_list=[]
+        #Initialize z(t=0) and u0
+        u,b = self.zero_state(B, x.device)
+        q = torch.zeros([B,N], device=x.device, dtype=torch.int32)
+        
+        last_z = torch.zeros_like(x[:,0,:])
+
+        al = self.reset_alpha
+        bet =self.thr_alpha
+        #Time Loop:
+        for t in range(T):
+            xt = x[:,t,:]
+            reset = torch.mul(last_z,self.reset_gamma)
+            u = al * u + (1- al) * xt - reset
+            z = self.spike(u - b)
+            z = torch.where(q == 0, z, torch.zeros_like(z))
+            q = torch.maximum(q + z.int() * self.refractory_period, torch.zeros_like(z))
+            b = bet*b + (1-bet)*torch.mul(z,self.thr_gamma)
+            last_z = z
+            z_list.append(z)
+
+        if(self.training):
+            mom = 0.95
+            self.u0.data = mom * self.u0 + (1-mom) * u.mean(0)
+            self.b0.data = mom * self.b0 + (1-mom) * b.mean(0)
+
+        z = torch.stack(z_list,dim=1)
+        return z
+
+
+class ResetSpikeFunction(nn.Module):
+    #Implements a reset on the spikes
+    def __init__(self,n_neurons,  alpha = 0.9, dampening_factor=0.3):
+        super(ResetSpikeFunction, self).__init__()
+        self.dampening_factor = dampening_factor
+        self.alpha = alpha
+        self.n_neurons = n_neurons
+        self.reset_gamma = nn.Parameter(data = torch.ones(self.n_neurons), requires_grad = True)
+        self.register_buffer("u0", torch.zeros(self.n_neurons))
+        self.spike = SpikeFunction(dampening_factor = self.dampening_factor)
+
+    def zero_state(self, n_batch, device):
+        oo = torch.ones([n_batch,1], device=device)
+        return oo * self.u0[None, :]
+
+    def forward(self,x):
+        #x in [Batch, Time, Neuron] format
+        B,T,N = x.shape
+        z_list=[]
+        #Initialize z(t=0) and u0
+        z_list.append(self.spike(x[:,0,:]))
+        u = self.zero_state(B, x.device)
+        al = self.alpha
+        #Time Loop:
+        for t in range(1,T):
+            xt = x[:,t,:]
+            reset = torch.mul(z_list[-1],self.reset_gamma)
+            u = al * u + (1- al) * xt - reset
+            z = self.spike(u)
+            z_list.append(z)
+
+        if(self.training):
+            mom = 0.95
+            self.u0.data = mom * self.u0 + (1-mom) * u.mean(0)
+
+        z = torch.stack(z_list,dim=1)
+        return z
+
+
+class AdaptSpikeFunction(nn.Module):
+    def __init__(self,n_neurons, alpha = 0.95, dampening_factor=0.3):
+        super(AdaptSpikeFunction, self).__init__()
+        self.dampening_factor = dampening_factor
+        self.alpha = alpha
+        self.n_neurons = n_neurons
+        #Learnable gamma parameter
+        self.reset_gamma = nn.Parameter(data = torch.ones(self.n_neurons), requires_grad = True)
+        self.spike = SpikeFunction(dampening_factor = self.dampening_factor)
+        #self.register_buffer("b0", torch.zeros(self.n_neurons))
+        self.count = 0
+
+    def zero_state(self, n_batch, device):
+        oo = torch.ones([n_batch,1], device=device)
+        return oo * self.b0[None, :]
+    
+    def forward(self, x):
+        B,T,N = x.shape
+        z_list = []
+        #Initialize z(t=0) b and u 
+        #b = self.zero_state(B, x.device)
+        b = torch.ones_like(x[:,0,:])
+        z_list.append(self.spike(x[:,0,:]))
+
+        #Time Loop:
+        for t in range(1,T):
+            b = self.alpha*b + (1-self.alpha)*torch.mul(z_list[-1],self.reset_gamma)
+            z_list.append(self.spike(x[:,t,:]-b))
+
+        #Check whether or not the model learns Gamma parameter or not
+        if self.count%10000 == 0:
+            print(f"Gamma mean: {self.reset_gamma.mean()}")
+        self.count +=1
+        
+        '''
+        if(self.training):
+            mom = 0.95
+            self.b0.data = mom * self.b0 + (1-mom) * b.mean(0)
+        '''
+        z = torch.stack(z_list,dim=1)
+        
+        return z
+
+
+class RefractorySpikeFunction(nn.Module):
+    def __init__(self,n_neurons, refractory_period = 5, dampening_factor=0.3):
+        super(RefractorySpikeFunction, self).__init__()
+        self.dampening_factor = dampening_factor
+        self.n_neurons = n_neurons
+        self.refractory_period = refractory_period
+        #self.spike = SpikeFunction(dampening_factor = self.dampening_factor)
+
+    def forward(self,x):
+        B,T,N = x.shape
+        ''' 
+        #Initialize z list and q
+        z_list = []
+        z_list.append(self.spike(x[:,0,:]))
+        q = self.refractory_period*z_list[0]
+
+
+        # time loop
+        for t in range(1,T):
+            z_list.append(self.spike(x[:,t,:])) #Spike on input first
+            cond = torch.logical_and(x[:,t,:] > 0, torch.logical_not(q)) 
+            z_list[-1] = torch.where(cond, z_list[-1], torch.zeros_like(q)) # remove the spikes that are there during the refractory period
+            q = torch.maximum(torch.zeros_like(q),q-1)
+            q = q + self.refractory_period*z_list[-1] #Update the value of q
+
+        z = torch.stack(z_list,dim=1)
+        
+        '''
+        
+
+        # time loop
+        with torch.no_grad():
+            z_forward=torch.zeros_like(x)
+            #Initialize z(0) and q
+            z_forward[:,0,:]=torch.where(x[:,0,:] > 0, torch.ones_like(x[:,0,:]), torch.zeros_like(x[:,0,:]))
+            q = torch.zeros_like(z_forward[:,0,:])
+            q = q + self.refractory_period*z_forward[:,0,:]
+
+            for t in range(1,T):
+                cond = torch.logical_and(x[:,t,:] > 0, q == 0)
+                z_forward[:,t,:]=torch.where(cond, torch.ones_like(q), torch.zeros_like(q))
+                q = torch.maximum(torch.zeros_like(q),q-1)
+                q = q + self.refractory_period*z_forward[:,t,:]
+
+        if not x.requires_grad:
+            return z_forward
+
+        z_backward = torch.where(x > 0, - 0.5 * torch.square(x - 1), 0.5 * torch.square(x + 1))
+        z_backward = torch.where(torch.abs(x) < 1, z_backward, torch.zeros_like(x))
+        z_backward = self.dampening_factor * z_backward
+
+        z = (z_forward - z_backward).detach() + z_backward
+        
+        return z
+
+
 def logit(prob):
     if not isinstance(prob, Tensor):
         prob = torch.tensor(prob)
@@ -369,12 +562,20 @@ class RSNNLayer(nn.Module):  # jit.ScriptModule):
 
 class NaiveSpikeLayer(nn.Module):
 
-    def __init__(self, input_dim, embed_dim):
+    def __init__(self, input_dim, embed_dim,spike_fn):
         super(NaiveSpikeLayer, self).__init__()
 
         self.w_in = nn.Linear(input_dim, embed_dim)
-        self.spike_function = SpikeFunction()
-
+        if spike_fn == "free":
+            self.spike_function = SpikeFunction()
+        elif spike_fn == "reset":
+            self.spike_function = ResetSpikeFunction(n_neurons=embed_dim)
+        elif spike_fn == "adapt":
+            self.spike_function = AdaptSpikeFunction(n_neurons=embed_dim)
+        elif spike_fn == "refractory":
+            self.spike_function = RefractorySpikeFunction(n_neurons=embed_dim)
+        elif spike_fn == "full":
+            self.spike_function = FullSpikeFunction(n_neurons=embed_dim)
     def forward(self, x):
         x = self.w_in(x)
         x = self.spike_function(x)

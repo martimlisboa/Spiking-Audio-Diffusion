@@ -4,6 +4,20 @@ import socket
 
 
 from params import params
+class dotdict(dict):
+    """dot.notation access to dictionary attributes"""
+    __getattr__ = dict.get
+    __setattr__ = dict.__setitem__
+    __delattr__ = dict.__delitem__
+
+
+
+def override_args_from_dotdict(dotdict_args):
+    args = make_scaffold_parser().parse_args() #Create a scaffold parser with all the default arguments
+    for k,v in dotdict_args.items():
+        setattr(args,k,v) #Add the compulsory arguments and modify whatever is not set         
+                          #to default according to dotdict_args  
+    return args
 
 def str2bool(v):
     if v.lower() in ('yes', 'true', 't', 'y', '1', 'True'):
@@ -14,11 +28,8 @@ def str2bool(v):
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
 
-def parse_parameters(parser):
-# Model setup parameters
-    parser.add_argument('encoder', nargs='+', help='type of encoder: [] + dimension')
-    parser.add_argument('model_dir', help='directory in which to store model checkpoints and training logs')
-    parser.add_argument('data_dirs', nargs='+',default = "maestro", help='space separated list of directories from which to read .wav files for training')
+
+def parse_opt_parameters(parser):
     parser.add_argument('--fp16', action='store_true', default=False,help='use 16-bit floating point operations for training')
     parser.add_argument('--rep_loss_type', nargs='+', default= ["none"], help='encoder loss function')
     parser.add_argument('--annealing',action='store_true',default = False,help="Anneal the representation loss coefficient")
@@ -55,9 +66,11 @@ def parse_parameters(parser):
     parser.add_argument('--inject_depth', default=params.encoder_params.inject_depth, type=int, help='Default inject depth')
     parser.add_argument('--lstm', action='store_true', default=params.encoder_params.lstm,help='integrate context with lstm after the spikes')
     parser.add_argument('--transformer', action='store_true', default=params.encoder_params.transformer,help='integrate context with Transformer after the spikes')
+    parser.add_argument('--batch_norm', action='store_true', default=params.encoder_params.batch_norm,help='batch norm before spiking')    
     parser.add_argument('--encodec_ratios', nargs='+',default = params.encoder_params.encodec_ratios, type = int,help='Encodec SEANet encoder downsampling factors')
 
     parser.add_argument('--firing_rate_threshold', default=params.encoder_params.firing_rate_threshold, type = float,help='firing rate threshold in relu loss')
+    parser.add_argument('--spike_function', default= params.encoder_params.spike_function, help='alternative spiking functions')
     parser.add_argument('--in_channels', default=params.encoder_params.in_channels, type=int, help='input audio channels')
 
     parser.add_argument('--encodec_dim', default=params.encoder_params.encodec_dim, type=int, help='Default encodec encoder output dim')
@@ -73,7 +86,20 @@ def parse_parameters(parser):
     parser.add_argument('--binary_quantizer_lr_internal', default=params.encoder_params.binary_quantizer_lr_internal, type=float, help='Internal Learning Rate of Binary Quantizer')
 
 
+
+def parse_parameters(parser):
+# Model setup parameters
+    parser.add_argument('encoder', nargs='+', help='type of encoder: [] + dimension')
+    parser.add_argument('model_dir', help='directory in which to store model checkpoints and training logs')
+    parser.add_argument('data_dirs', nargs='+',default = "maestro", help='space separated list of directories from which to read .wav files for training')
+    parse_opt_parameters(parser)
+
 def make_parser():
     parser = argparse.ArgumentParser(description='train (or resume training) a SpikingMusic model')
     parse_parameters(parser)
+    return parser
+
+def make_scaffold_parser():
+    parser = argparse.ArgumentParser(description = "Parses only the optional arguments, set to default")
+    parse_opt_parameters(parser)
     return parser

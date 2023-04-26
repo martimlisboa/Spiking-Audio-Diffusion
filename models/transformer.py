@@ -22,16 +22,20 @@ class TransformerModel(nn.Module):
         self.encoder = nn.Linear(n_input, d_model)
         self.d_model = d_model
         self.n_output = n_output
+        self.n_input = n_input
+
         self.decoder = nn.Linear(d_model, n_output)
         self.batch_first = batch_first
 
         self.init_weights()
 
     def init_weights(self) -> None:
-        initrange = 0.1
-        self.encoder.weight.data.uniform_(-initrange, initrange)
+        initrange_enc = 1/math.sqrt(self.n_input)
+        initrange_dec = 1/math.sqrt(self.d_model)
+
+        self.encoder.weight.data.uniform_(-initrange_enc, initrange_dec)
         self.decoder.bias.data.zero_()
-        self.decoder.weight.data.uniform_(-initrange, initrange)
+        self.decoder.weight.data.uniform_(-initrange_dec, initrange_dec)
 
     #@jit.script_method
     def forward_batch_not_first(self, x: Tensor, src_mask: Optional[Tensor] = None):

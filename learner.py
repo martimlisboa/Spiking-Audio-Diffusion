@@ -8,9 +8,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from tqdm import tqdm
 
-
 from dataset_utils import from_maestro
-
 import time
 
 from model import SpikingAudioDiffusion
@@ -26,6 +24,7 @@ def train(args): #Train on 1 GPU
 
   #Model
   model = SpikingAudioDiffusion(args).cuda()
+
   #print(model)
   _train_impl(0, model, dataloader, args)
 
@@ -53,7 +52,8 @@ def _train_impl(replica_id, model, dataloader, args):
 
   learner = SpikingAudioDiffusionLearner(args.model_dir, model, dataloader, opt, args, fp16=args.fp16)
   learner.is_master = (replica_id == 0)
-  learner.restore_from_checkpoint()
+  _restore = learner.restore_from_checkpoint()
+  print(f"Restoring from checkpoint: {_restore}")
   learner.train(max_steps=args.max_steps)
 
 
@@ -72,6 +72,7 @@ class SpikingAudioDiffusionLearner: #Object to handle the training loop and the 
     self.step = 0
     self.is_master = True
     self.summary_writer = None
+
 
 
 
