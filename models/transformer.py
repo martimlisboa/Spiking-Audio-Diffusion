@@ -33,7 +33,7 @@ class TransformerModel(nn.Module):
         initrange_enc = 1/math.sqrt(self.n_input)
         initrange_dec = 1/math.sqrt(self.d_model)
 
-        self.encoder.weight.data.uniform_(-initrange_enc, initrange_dec)
+        self.encoder.weight.data.uniform_(-initrange_enc, initrange_enc)
         self.decoder.bias.data.zero_()
         self.decoder.weight.data.uniform_(-initrange_dec, initrange_dec)
 

@@ -6,6 +6,7 @@ import torchaudio.transforms as TT
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from scipy.ndimage import gaussian_filter1d
+from torchmetrics.functional.audio import scale_invariant_signal_noise_ratio
 
 import os
 import sys
@@ -128,6 +129,7 @@ def main(args):
     print(f"Decoding Time: {dt}")
     
 
+    sisnr = scale_invariant_signal_noise_ratio(audio_inf,audios).squeeze(1)
    
 
 
@@ -164,6 +166,7 @@ def main(args):
         fig, ax = plt.subplots(figsize=(16,9))
         for i,z in enumerate(spikes.detach().cpu()):
             print(f"\nSample:{names[i]}")
+            print(f"SI-SNR: {sisnr[i]}")
             print(f"Bit Rate")
             count_bpf(z, conv = args.sample_rate/model.autoencoder.encoder.downsample_factor)
             ax.imshow(z,cmap="Greys",interpolation="none",aspect='auto')
@@ -175,6 +178,8 @@ def main(args):
     if args.plot_codes:
         fig, ax = plt.subplots(figsize=(16,9))
         for i,z in enumerate(codes.detach().cpu()):
+            print(f"\nSample:{names[i]}")
+            print(f"SI-SNR: {sisnr[i]}")
             ax.imshow(z,interpolation="none",aspect='auto')
             fig.tight_layout()
             filename = "/lcncluster/lisboa/spikes_audio_diffusion/wav_outputs/"+names[i]+"/"+ args.output +"/"+"plot_codes_"+args.encoder[0]+".png";

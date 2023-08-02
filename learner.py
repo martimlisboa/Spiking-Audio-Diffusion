@@ -1,17 +1,26 @@
 import numpy as np
 import os
+import math
 import torch
 import torch.nn as nn
+import matplotlib.pyplot as plt
+from models import MultiMelSpectrogram
 
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.tensorboard import SummaryWriter
 
 from tqdm import tqdm
+import torchaudio as T
+from torchmetrics.functional.audio import scale_invariant_signal_noise_ratio,scale_invariant_signal_distortion_ratio
 
 from dataset_utils import from_maestro
 import time
 
 from model import SpikingAudioDiffusion
+
+from models import compN_bps,compT_bps,clist_bps
+
+
 
 verbose = False
 
@@ -72,11 +81,16 @@ class SpikingAudioDiffusionLearner: #Object to handle the training loop and the 
     self.step = 0
     self.is_master = True
     self.summary_writer = None
+    win_lengths = [2**i for i in range(5,12)]
+    mel_bins = [5*2**i for i in range(7)]
+
+    self.multi_scale_mel = MultiMelSpectrogram(args.sample_rate,win_lengths,mel_bins).to(self.model.get_device())
 
 
 
 
   def train(self, max_steps=None):
+    self.model.train()
     device = next(self.model.parameters()).device
     #Start Time:
     t0 = time.time()
@@ -91,13 +105,23 @@ class SpikingAudioDiffusionLearner: #Object to handle the training loop and the 
         if torch.isnan(loss).any():
           raise RuntimeError(f'Detected NaN loss at step {self.step}.')
         if self.is_master:
+
           if self.step % self.args.save_step == 0:
             self._write_summary(self.step, loss,rep_loss,beta)
+
+          if self.step % self.args.test_step == 0:
+            self.model.eval()
+            self._test(self.step, features)
+            self.model.train()
+
           if self.step % self.args.save_model_step  == 0 or self.step == 10000:
             self.save_to_checkpoint()
             t = (time.time() - t0)
             print(f"Saved to checkpoint: {self.step} steps: ")
-            print(f"Training Time:  {t/3600} hours")            
+            print(f"Training Time:  {t/3600} hours")   
+            self.model.eval()
+            self.encode_save_decode(input_path=self.args.wav_input_path, output_path=self.args.wav_output_path)         
+            self.model.train()
         self.step += 1
 
 
@@ -108,25 +132,34 @@ class SpikingAudioDiffusionLearner: #Object to handle the training loop and the 
     audio = features['audio']
     
     with self.autocast:
-      loss, info = self.model(audio)
+      if self.args.encoder[0] in ["encodec","q_encodec","mel","vocoder","rec_encodec"]:
+        loss, info = self.model(audio)
+      elif self.args.encoder[0] in ["mu_encodec"]:
+        # random level of sparsity instantiated here
+        mu = torch.randint(self.args.nr_mu_embeddings,(self.args.batch_size,), device = self.model.get_device())
+        
+        loss, info = self.model(audio,mu = mu)
 
-    rep_loss = info["rep_loss"]
-    beta = 1
-    if self.args.annealing:
-      beta = geometric(self.step,10,4,self.args.goal_beta,10000,40000)
+    if self.args.encoder[0] in ["encodec","q_encodec","mu_encodec","rec_encodec"]:
+      rep_loss = info["rep_loss"]
+      beta = 1
+      if self.args.annealing:
+        beta = geometric(self.step,self.args.r_value,self.args.log_slope,self.args.goal_beta,self.args.warm_up_steps,self.args.annealing_steps)
+      loss = loss + beta*rep_loss
+    else:
+      rep_loss = 0
+      beta = 0
 
-    loss = loss + beta*rep_loss
-    
     #Backprop
     self.scaler.scale(loss).backward()
     self.scaler.unscale_(self.optimizer)
     self.grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), self.args.max_grad_norm or 1e9)
     self.scaler.step(self.optimizer)
     self.scaler.update()
-    
+
     return loss,rep_loss,beta
 
-#Functions to handle Checkpoints
+ #Functions to handle Checkpoints
   def state_dict(self):
     if hasattr(self.model, 'module') and isinstance(self.model.module, nn.Module):
       model_state = self.model.module.state_dict()
@@ -135,11 +168,29 @@ class SpikingAudioDiffusionLearner: #Object to handle the training loop and the 
     return {
         'step': self.step,
         'model': { k: v.cpu() if isinstance(v, torch.Tensor) else v for k, v in model_state.items() },
-        'optimizer': { k: v.cpu() if isinstance(v, torch.Tensor) else v for k, v in self.optimizer.state_dict().items() },
+        'optimizer': { k: v.cpu() if isinstance(v, torch.Tensor) else v for k, v in self.optimizer.state_dict().items()},
         'scaler': self.scaler.state_dict(),
     }
   
   def load_state_dict(self, state_dict):
+    #This code is to help patch different versions of the integrate_context:
+    keys = list(state_dict["model"].keys())
+    for key in keys:
+        
+        prefix = "autoencoder.encoder"
+        prefixes = [f"{prefix}.{module}" for module in ["transformer","conformer","lstm"]]
+  
+        for p in prefixes:
+            if key.startswith(p):
+                #print(key)
+                suffix = key.removeprefix(prefix)
+                #print(suffix)
+                newkey = f"{prefix}.integrate_context{suffix}"
+                #print(newkey)
+                # print('\n')
+                state_dict['model'][newkey] = state_dict["model"].pop(key)
+
+
     if hasattr(self.model, 'module') and isinstance(self.model.module, nn.Module):
       self.model.module.load_state_dict(state_dict['model'])
     else:
@@ -147,6 +198,7 @@ class SpikingAudioDiffusionLearner: #Object to handle the training loop and the 
     self.optimizer.load_state_dict(state_dict['optimizer'])
     self.scaler.load_state_dict(state_dict['scaler'])
     self.step = state_dict['step']
+    print(f"Successfully loaded from checkpoint {self.step}")
   
   def save_to_checkpoint(self, filename='weights'):
     save_basename = f'{filename}-{self.step}.pt'
@@ -182,6 +234,174 @@ class SpikingAudioDiffusionLearner: #Object to handle the training loop and the 
     writer.add_scalar('train/grad_norm', self.grad_norm, step)
     writer.flush()
     self.summary_writer = writer
+  
+
+
+  def count_bps(self,bottleneck_output): #Returns bits per second
+    B,N,T = bottleneck_output.shape
+    S = bottleneck_output.sum(dim = (1,2)) 
+    N,T = torch.tensor(N,dtype = torch.float,device = self.model.get_device()),torch.tensor(T,dtype=torch.float,device = self.model.get_device())
+
+    clist = clist_bps(N,T,S)/T
+    compN = compN_bps(N,T,S)/T
+    compT = compT_bps(N,T,S)/T
+
+    bpf,_ = torch.min(torch.stack([clist,compN,compT],dim = 0),dim=0)
+    bpf = torch.where(bpf < N,bpf,N)
+    #print(f"Final Bit rate {bpf} bit/frame")
+
+    return bpf*self.model.args.sample_rate/self.model.autoencoder.encoder.downsample_factor #convert to bits/s
+  
+  def SISNR(self,audio_in,audio_out):
+    if audio_in.shape[1] == 1:
+        return scale_invariant_signal_distortion_ratio(audio_out,audio_in).squeeze(1) #Audio is of size [Batch, Channel, Time] so we squeeze the channel dim
+    else:
+        return scale_invariant_signal_distortion_ratio(audio_out,audio_in)
+  
+  @torch.no_grad()
+  def _test(self, step, features):
+    audio_in = features['audio']
+    if self.args.encoder[0] in ["encodec","q_encodec","rec_encodec","mel","vocoder"]:
+      audio_out,latent,info = self.model.autoencode(audio_in,num_steps = 100,show_progress=False)
+    elif self.args.encoder[0] in ["mu_encodec"]:
+      mu = torch.randint(self.args.nr_mu_embeddings,(audio_in.shape[0],), device = self.model.get_device())
+      audio_out,latent, info = self.model.autoencode(audio_in,mu=mu,num_steps = 100,show_progress=False)
+
+
+    sisnr = self.SISNR(audio_in,audio_out).mean()
+    msMAE = self.multi_scale_mel.loss(audio_in,audio_out).mean()
+    msSISNR = self.multi_scale_mel.sisnr_loss(audio_in,audio_out).mean()
+
+    if self.args.encoder[0] in ["encodec","mu_encodec","rec_encodec"]:
+      bps = self.count_bps(info["spikes"]).mean()
+    elif self.args.encoder[0] in ["q_encodec"]:
+      n_q = self.model.autoencoder.encoder.quantizer.n_q
+      bpf_per_quantizer = math.ceil(math.log2(self.model.autoencoder.encoder.quantizer.bins))
+      conv_bps = self.model.args.sample_rate/self.model.autoencoder.encoder.downsample_factor
+      bps = n_q * bpf_per_quantizer * conv_bps * torch.ones_like(sisnr)
+
+    writer = self.summary_writer or SummaryWriter(self.model_dir, purge_step=step)
+    writer.add_scalar('train/sisnr', sisnr, step)
+    writer.add_scalar('train/bps', bps, step)
+    writer.add_scalar('train/msMAE', msMAE, step)
+    writer.add_scalar('train/msSISNR', msSISNR, step)
+
+
+    writer.flush()
+    self.summary_writer = writer
+
+  @torch.no_grad()
+  def encode_save_decode(self,input_path,output_path):
+    #Get the list of audios to run the tests on
+    files = os.listdir(input_path) 
+    audios = []
+    audio_names = []
+    model_name = os.path.basename(os.path.normpath(self.model_dir))
+    for name in files:
+        audio_names.append(name[:-4])
+        audio_path =input_path+name
+        audio, sr = T.load(audio_path)
+        audios.append(audio)
+
+    audios = torch.stack(audios,dim = 0).to(self.model.get_device())
+    print(f"Audios Shape: {audios.shape}")
+    #Encode
+    t0 = time.time()
+    print("\n")
+    if self.args.encoder[0] in ["mel","vocoder"]:
+        latent,_ = self.model.encode(audios) # Encode
+    elif self.args.encoder[0] in ["encodec"]:
+        latent, info = self.model.encode(audios) # Encode
+        rep = info["spikes"]
+        print(f"spikes shape: {rep.shape}")
+    elif self.args.encoder[0] in ["mu_encodec"]:
+        mu = torch.randint(self.args.nr_mu_embeddings,(audios.shape[0],), device = self.model.get_device())
+        latent, info = self.model.encode(audios,mu = mu) # Encode
+        rep = info["spikes"]
+        print(f"spikes shape: {rep.shape}")
+
+    elif self.args.encoder[0] in ["q_encodec"]:
+        latent, info = self.model.encode(audios) # Encode
+        rep = torch.permute(info['codes'],[1,0,2])
+        print(f"codes shape: {rep.shape}")
+    
+    dt = time.time() - t0
+    print(f"Encoding Time: {dt}\n")
+
+    #Decode
+    t0 = time.time()
+    if self.args.encoder[0] in ["mel","vocoder","mu_encodec","q_encodec","encodec"]:
+      audios_inf = self.model.decode(latent, num_steps=100) # Decode by sampling diffusion model conditioning on latent
+    
+    elif self.args.encoder[0] in ["rec_encodec"]:
+      audios_inf, latent, info = self.model.autoencode(audios,num_steps = 100)
+      rep = info["spikes"]
+      print(f"spikes shape: {rep.shape}")
+      
+    print(f"latent shape: {latent.shape}")
+    print(f"output audios shape: {audios_inf.shape}")
+    dt = time.time() - t0
+    print(f"Decoding Time: {dt}")
+
+    #Compute SI-SNR
+    sisnr = self.SISNR(audios,audios_inf)
+    print(f"SI-SNR Rates: {sisnr}")
+
+    #Compute Bit Rates
+    if self.args.encoder[0] in ["encodec","mu_encodec","rec_encodec"]:
+        bps = self.count_bps(info["spikes"])
+        print(f"Bit Rates: {bps}")
+    elif self.args.encoder[0] == "q_encodec":
+        n_q = self.model.autoencoder.encoder.quantizer.n_q
+        bpf_per_quantizer = math.ceil(math.log2(self.model.autoencoder.encoder.quantizer.bins))
+        conv_bps = self.model.args.sample_rate/self.model.autoencoder.encoder.downsample_factor
+        bps = n_q * bpf_per_quantizer * conv_bps * torch.ones_like(sisnr)
+    else: 
+      bps = 44100
+
+    out_dir = f"{output_path}/{model_name}"
+    os.makedirs(out_dir,exist_ok=True)
+
+    archive_path = f"{out_dir}/archive.npz"
+    with open(archive_path,'wb') as f:
+      np.savez(f,rep = rep.detach().cpu().numpy(), bps = bps.detach().cpu().numpy(), sisnr = sisnr.detach().cpu().numpy())
+     
+    for i,name in enumerate(audio_names):
+      output_audio_filename = f"{out_dir}/{name}_{model_name}.wav"
+      T.save(output_audio_filename,audios_inf[i].cpu(),sample_rate = sr) #save output audio
+
+    
+    fig, ax = plt.subplots(figsize=(16,9))
+    for i,l in enumerate(latent.detach().cpu()):
+        im = ax.imshow(l,aspect='auto')
+        #fig.colorbar(im, ax=ax)
+        fig.tight_layout()
+        filename = f"{out_dir}/{audio_names[i]}_{model_name}_latent.png"
+        plt.savefig(filename)
+        plt.cla()
+    plt.close(fig = fig)
+
+    if self.args.encoder[0] in ["encodec","mu_encodec","rec_encodec"]:
+        fig, ax = plt.subplots(figsize=(16,9))
+        for i,z in enumerate(rep.detach().cpu()):
+            ax.imshow(z,cmap="Greys",interpolation="none",aspect='auto')
+            fig.tight_layout()
+            filename = f"{out_dir}/{audio_names[i]}_{model_name}_spikes.png"
+            plt.savefig(filename)
+            plt.cla()
+        plt.close(fig = fig)
+
+
+    elif self.args.encoder[0] in ["q_encodec"]:
+        fig, ax = plt.subplots(figsize=(16,9))
+        for i,z in enumerate(rep.detach().cpu()):
+            ax.imshow(z,interpolation="none",aspect='auto')
+            fig.tight_layout()
+            filename = f"{out_dir}/{audio_names[i]}_{model_name}_codes.png"
+            plt.savefig(filename)
+            plt.cla()
+        plt.close(fig = fig)
+        
 
 
 def _nested_map(struct, map_fn):

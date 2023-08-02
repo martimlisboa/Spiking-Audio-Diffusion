@@ -31,7 +31,7 @@ spec:
             echo "conda activate MusicAI";
             conda activate MusicAI;
             echo "python ~/spikes_audio_diffusion/metrics.py ";
-            python ~/spikes_audio_diffusion/metrics.py;
+            python ~/spikes_audio_diffusion/metrics.py; 
             echo "End of training job";
         resources:
           limits:

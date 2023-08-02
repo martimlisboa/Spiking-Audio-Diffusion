@@ -291,7 +291,7 @@ class MaestroDataset(Dataset):
         metas = self.meta_data.to_dict(orient='records')[i_song]
         #note_event_list, control_change_64_event_list, control_change_67_event_list = \
         #self.parse_midi(i_song, sample_start, sample_end)
-
+        #note_event_list, _, _ = 
         #piano_roll = self.make_midi_piano_roll(note_event_list)
         #control_change_roll = self.make_control_change_roll(control_change_64_event_list, control_change_67_event_list)
 
@@ -342,8 +342,10 @@ class Collator:
 
     def collate_maestro(self,minibatch):
         audio = np.stack([record['audio'] for record in minibatch if 'audio' in record]) #Batch of audios
+        midi_args = np.stack([(record['i_song'],record['sample_start'],record['sample_end']) for record in minibatch])
         return {
           'audio':torch.from_numpy(audio).unsqueeze(1), #Unsqueeze for mono channel
+          'midi_args': torch.from_numpy(midi_args)
         }
 
 

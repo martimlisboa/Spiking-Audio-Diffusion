@@ -1,0 +1,49 @@
+apiVersion: run.ai/v1
+kind: RunaiJob
+metadata:
+  name: visqol # e.g. training-pod
+  labels:
+    # leave empty to obtain training job
+spec:
+  template:
+    metadata:
+      labels:
+        user: martim.lisboa # User i.e. firstname.lastname
+    spec:
+      hostIPC: true
+      securityContext:
+        runAsUser: 232201 # insert uid found in people.epfl in admistrative data
+        runAsGroup: 30243  # insert gid found in people.epfl in admistrative data
+        fsGroup: 0
+      containers:
+      - name: visqol # e.g. training-pod
+        image: nvcr.io/nvidia/pytorch:22.07-py3
+        volumeMounts: # mount lcncluster shared volume1
+            - mountPath: /lcncluster
+              name: lcncluster
+        command: ["/bin/bash", "-c"] # bash commands as args below, e.g. using a custom conda installation on the lcncluster
+        args:
+          - echo "Start of training job";
+            echo "conda init bash";
+            conda init bash;
+            echo "source ~/.bashrc";
+            source ~/.bashrc;
+            echo "conda activate MusicAI";
+            conda activate MusicAI;
+            echo "python ~/spikes_audio_diffusion/visqol.py ";
+            python ~/spikes_audio_diffusion/visqol.py;
+            echo "End of training job";
+        resources:
+          limits:
+            nvidia.com/gpu: 1 # up to 4, 0 for CPU only
+        env: # define HOME directory for pod
+          - name: HOME
+            value: /lcncluster/lisboa # PATH to HOME e.g. /lcncluster/user/.caas_HOME
+      volumes: # define shared volume lcncluster
+          - name: lcncluster
+            persistentVolumeClaim:
+              claimName: runai-lcn1-negalho-lcncluster
+      restartPolicy: Never
+      schedulerName: runai-scheduler
+#      nodeSelector:
+#        accelerator: nvidia-a100

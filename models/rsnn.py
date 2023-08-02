@@ -72,7 +72,9 @@ class FullSpikeFunction(nn.Module):
             u = al * u + (1- al) * xt - reset
             z = self.spike(u - b)
             z = torch.where(q == 0, z, torch.zeros_like(z))
-            q = torch.maximum(q + z.int() * self.refractory_period, torch.zeros_like(z))
+            #q = torch.maximum(q + z.int() * self.refractory_period, torch.zeros_like(z))
+            q = torch.maximum(torch.zeros_like(q),q-1)
+            q = q + self.refractory_period*z.int() 
             b = bet*b + (1-bet)*torch.mul(z,self.thr_gamma)
             last_z = z
             z_list.append(z)
@@ -134,7 +136,7 @@ class AdaptSpikeFunction(nn.Module):
         #Learnable gamma parameter
         self.reset_gamma = nn.Parameter(data = torch.ones(self.n_neurons), requires_grad = True)
         self.spike = SpikeFunction(dampening_factor = self.dampening_factor)
-        #self.register_buffer("b0", torch.zeros(self.n_neurons))
+        self.register_buffer("b0", torch.zeros(self.n_neurons))
         self.count = 0
 
     def zero_state(self, n_batch, device):
@@ -145,8 +147,8 @@ class AdaptSpikeFunction(nn.Module):
         B,T,N = x.shape
         z_list = []
         #Initialize z(t=0) b and u 
-        #b = self.zero_state(B, x.device)
-        b = torch.ones_like(x[:,0,:])
+        b = self.zero_state(B, x.device)
+        #b = torch.ones_like(x[:,0,:])
         z_list.append(self.spike(x[:,0,:]))
 
         #Time Loop:
@@ -158,12 +160,11 @@ class AdaptSpikeFunction(nn.Module):
         if self.count%10000 == 0:
             print(f"Gamma mean: {self.reset_gamma.mean()}")
         self.count +=1
-        
-        '''
+
         if(self.training):
             mom = 0.95
             self.b0.data = mom * self.b0 + (1-mom) * b.mean(0)
-        '''
+        
         z = torch.stack(z_list,dim=1)
         
         return z
