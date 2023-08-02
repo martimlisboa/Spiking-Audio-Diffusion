@@ -4,6 +4,7 @@ wav_inputs
 wav_outputs
 other_wav_outputs
 experiment
+data
 *.wav
 *.mp3
 *.png
